@@ -152,12 +152,9 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, err
 	}
 
-	// Clear the in-memory restarting cache once the rebuild has replaced the members,
-	// or when the instance is Ready. Releasing on drainage rather than on readiness is
-	// what lets a rebuild whose replacement never becomes Ready be retried.
-	drained := recreationDrained(instance, filteredPods)
+	// Clear the in-memory restarting cache when instance becomes Ready
 	for _, cond := range newStatus.Conditions {
-		if drained || (cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue) {
+		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
 			r.syncControl.ClearRestarting(instance)
 			break
 		}

@@ -176,11 +176,11 @@ func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInst
 			}
 		}
 	}
-	r.setInstanceConditions(instance, newStatus, conditions, pods)
+	r.setInstanceConditions(instance, newStatus, conditions)
 }
 
 func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
-	newInnerConditions []workloadsv1alpha2.RoleInstanceCondition, pods []*v1.Pod) {
+	newInnerConditions []workloadsv1alpha2.RoleInstanceCondition) {
 	conditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0, len(instance.Status.Conditions)+1)
 	conditions = append(conditions, newInnerConditions...)
 	podsReadyCondition := r.getInstancePodsReadyCondition(instance)
@@ -224,11 +224,8 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 			continue
 		}
 		if !innerConditionTypes.Has(c.Type) {
-			// Clear Restarting once the rebuild has finished replacing the members, not
-			// only once the instance is Ready. A rebuilt instance whose replacement never
-			// becomes Ready would otherwise keep this guard set forever, and the restart
-			// policy could never fire again.
-			if c.Type == workloadsv1alpha2.RoleInstanceRestarting && (instanceReady || recreationDrained(instance, pods)) {
+			// Clear Restarting condition when instance becomes Ready
+			if c.Type == workloadsv1alpha2.RoleInstanceRestarting && instanceReady {
 				continue
 			}
 			customInstanceConditions = append(customInstanceConditions, c)
@@ -236,38 +233,6 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 	}
 	conditions = append(conditions, customInstanceConditions...)
 	newStatus.Conditions = conditions
-}
-
-// recreationDrained reports whether a restart-policy rebuild has finished replacing the
-// members: every desired rank exists and none of them is still terminating.
-//
-// Readiness is deliberately not part of it. The rebuilt members may legitimately never
-// become Ready — a replacement that cannot rejoin the surviving ranks is exactly the case
-// the restart policy exists for — and gating the release on Ready would then leave the
-// Restarting guard set for good.
-func recreationDrained(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
-	present := make(map[string]map[int32]struct{}, len(instance.Spec.Components))
-	for _, pod := range pods {
-		if pod.DeletionTimestamp != nil {
-			return false
-		}
-		name, id := instanceutils.GetPodComponentName(pod), instanceutils.GetPodComponentID(pod)
-		if present[name] == nil {
-			present[name] = make(map[int32]struct{})
-		}
-		present[name][id] = struct{}{}
-	}
-	for _, component := range instance.Spec.Components {
-		if component.Size == nil {
-			continue
-		}
-		for id := int32(0); id < *component.Size; id++ {
-			if _, ok := present[component.Name][id]; !ok {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 func (r *realStatusUpdater) getInstancePodsReadyCondition(instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstanceCondition {
