@@ -189,12 +189,19 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	// rolling the role on upgrade with nothing to roll to: RoleInstanceSpec's getters
 	// fold the string in and default the delays to these very values.
 	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate()
-	if backoff := role.GetRawRestartBackoff(); backoff != nil &&
-		(backoff.BaseDelaySeconds != nil || backoff.MaxDelaySeconds != nil) {
+	if raw := role.GetRawRestartBackoff(); raw != nil &&
+		(raw.BaseDelaySeconds != nil || raw.MaxDelaySeconds != nil || raw.ActivateAfter != "") {
 		restartPolicyApplyConfig := workloadsv1alpha2client.RestartPolicyConfig().
 			WithType(role.GetRestartPolicy()).
 			WithBaseDelaySeconds(role.GetBaseDelaySeconds()).
 			WithMaxDelaySeconds(role.GetMaxDelaySeconds())
+		// activateAfter is written only when the role sets it explicitly. Writing the
+		// resolved default would add a non-empty value to templates that never carried
+		// one, which changes the RoleInstanceSet revision hash and rolls the role on
+		// upgrade; SetMatchesRevision absorbs serialization drift but not a new value.
+		if raw.ActivateAfter != "" {
+			restartPolicyApplyConfig = restartPolicyApplyConfig.WithActivateAfter(raw.ActivateAfter)
+		}
 		roleInstanceTemplateConfig.WithRestartPolicyConfig(restartPolicyApplyConfig)
 	} else {
 		roleInstanceTemplateConfig.WithRestartPolicy(role.GetRestartPolicy())

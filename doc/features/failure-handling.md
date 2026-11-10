@@ -1,6 +1,7 @@
 # Failure Handling
 
-RBG supports `None`, `RecreateRoleInstanceOnPodRestart`, and the opt-in `RecreateRoleInstanceOnPodRestartFromCreation` policy.
+RBG supports `None` and `RecreateRoleInstanceOnPodRestart`. For the recreate policy,
+`restartPolicyConfig.activateAfter` decides when its triggers are armed.
 
 ![failure-handling](../img/failure-handling.png)
 
@@ -9,14 +10,57 @@ RBG supports `None`, `RecreateRoleInstanceOnPodRestart`, and the opt-in `Recreat
 | Policy | Description |
 |--------|-------------|
 | `None` | No automatic restart action; rely on default pod restart behavior. Failed pods are replaced through normal reconciliation. |
-| `RecreateRoleInstanceOnPodRestart` | Preserve the existing behavior: recreate the affected role instance on its existing unexpected-restart and Failed-pod triggers. |
-| `RecreateRoleInstanceOnPodRestartFromCreation` | Opt-in broader recovery: use the same ordinary-container unexpected-restart and Failed-pod triggers, and also recreate when a desired member pod is deleted. These triggers apply before the instance first becomes Ready and after observed generation matches desired generation. |
+| `RecreateRoleInstanceOnPodRestart` | Recreate the whole role instance when a member fails, restarts unexpectedly, or is lost (Terminating or absent). `activateAfter` decides whether that starts before or after the instance is first Ready. |
 
-The new policy is supported only by native RoleInstanceSet workloads. LeaderWorkerSet, StatefulSet, and Deployment roles are rejected at admission when configured with `RecreateRoleInstanceOnPodRestartFromCreation`, rather than silently ignoring its triggers. Existing `RecreateRoleInstanceOnPodRestart` configuration and behavior are unchanged.
+### Triggers
 
-`FromCreation` does not treat Pending or NotReady alone as a failure, bypass generation/revision guards, or count init-container/native-sidecar restarts. An in-place update exempts its expected container restarts, but cannot mask a Failed Pod or an observed desired-member deletion under the new policy.
+`RecreateRoleInstanceOnPodRestart` recreates the instance on any of:
 
-Both served RBG APIs accept the new policy. In v1alpha1 use `spec.roles[].restartPolicy`; in v1alpha2 use the pattern's `restartPolicyConfig.type`. Conversion preserves the selected policy in both directions.
+- a desired member Pod that is **Terminating**, or **absent** once the instance was Ready at its current generation,
+- a Pod in **Failed** phase,
+- a **container restart** that an in-place update does not explain.
+
+A Terminating member is the earliest signal after an eviction: with an unreachable node the
+Pod stays Terminating until the Node object is deleted, an out-of-service taint is applied,
+or it is force-deleted, and no same-name replacement exists before that. The absent-member
+half is narrower on purpose: it requires `readyPolicy: AllPodReady` and that the instance was
+already Ready at this generation, so creation and `readyPolicy: None` are unaffected.
+
+The existing protections stay in force: a rollout in progress (`currentRevision` not yet
+equal to `updateRevision`) never triggers, any spec change bumps the generation and disarms
+the triggers, Pending or NotReady alone is not a failure, init-container and native-sidecar
+restarts do not count, and an in-place update exempts only its own expected container
+restarts — it cannot mask a Failed Pod or a lost member.
+
+### Arming: `activateAfter`
+
+| Value | Meaning |
+|-------|---------|
+| `Ready` (default) | Triggers are armed once the instance has been Ready at its current generation. Creation and scale-up keep their protection. |
+| `Created` | Triggers are armed as soon as the instance exists, which also covers failures before the instance first becomes Ready. |
+
+The stability fact is persisted as `status.lastReadyGeneration`. Gating on the live
+`RoleInstanceReady` condition instead would be unsound: status is written after scaling, so
+a fault flips the condition to False before the restart signal becomes visible, and the
+policy would then never fire again.
+
+`activateAfter` is supported by native RoleInstanceSet workloads. LeaderWorkerSet-backed
+roles keep the policy they had; their behavior is already ungated (LWS recreates the group on
+`ContainerRestarted` or `PodDeleted` with no start or Ready gate) and the vendored LWS v0.7
+adapter exposes no field to express the distinction. StatefulSet and Deployment roles have no
+instance-level recreate path.
+
+**Deleting a single member now rebuilds the whole RoleInstance.** That is the intended
+semantics for this policy — the members of a multi-rank workload agree on a one-shot
+membership at startup, so replacing one rank in place does not recover it — and it matches
+LeaderWorkerSet. Use the `restart-trigger-policy: Ignore` annotation on auxiliary components
+whose failures should not affect the main workload.
+
+Both served RBG APIs accept the policy and `activateAfter`. In v1alpha2 use the pattern's
+`restartPolicyConfig`; in v1alpha1 use `spec.roles[].restartPolicy`, which cannot express
+`activateAfter` and therefore always resolves to the default `Ready`. Reading an object back
+through v1alpha1 drops an explicitly configured `activateAfter`, so use v1alpha2 when the
+arming point matters.
 
 ## Configuration
 
@@ -27,7 +71,8 @@ Set the `restartPolicyConfig` field on the pattern (`leaderWorkerPattern` or `cu
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `type` | string | `RecreateRoleInstanceOnPodRestart` | Restart policy type: `None`, `RecreateRoleInstanceOnPodRestart`, or `RecreateRoleInstanceOnPodRestartFromCreation`. |
+| `type` | string | `RecreateRoleInstanceOnPodRestart` | Restart policy type: `None` or `RecreateRoleInstanceOnPodRestart`. |
+| `activateAfter` | string | `Ready` | When the recreate triggers are armed: `Ready` or `Created`. Omit it to keep the default. |
 | `baseDelaySeconds` | int | `30` | Base delay (seconds) for exponential backoff between restart attempts. Set to `0` with `maxDelaySeconds: 0` to disable backoff entirely. |
 | `maxDelaySeconds` | int | `600` | Cap (seconds) for the exponential backoff delay. |
 
@@ -94,7 +139,7 @@ spec:
 
 ## Exponential Backoff
 
-When the resolved restart policy type is `RecreateRoleInstanceOnPodRestart` or `RecreateRoleInstanceOnPodRestartFromCreation`, subsequent crash-triggered recreations within a stability window are delayed by exponential backoff:
+When the resolved restart policy type is `RecreateRoleInstanceOnPodRestart`, subsequent crash-triggered recreations within a stability window are delayed by exponential backoff:
 
 - **First crash**: immediate recreation (no delay).
 - **Second crash** (within the stability window): delayed by `baseDelaySeconds`.
@@ -183,7 +228,7 @@ When this annotation is set to "Ignore" on a component's pod template:
 ## Use Cases
 
 - **`RecreateRoleInstanceOnPodRestart`**: Existing workloads that depend on the original, readiness-gated unexpected-restart and Failed-pod triggers.
-- **`RecreateRoleInstanceOnPodRestartFromCreation`**: RoleInstanceSet workloads that must recover from the same triggers before first readiness or after a desired member pod is deleted.
+- **`activateAfter: Created`**: instances that must also recover from failures before they first become Ready, such as a role whose startup can fail and then hang in a rendezvous.
 - **None**: Monitoring/logging sidecars that don't affect the main workload. Failed pods are replaced individually.
 - **restart-trigger-policy: "Ignore"** (annotation): Auxiliary components within a multi-component instance whose pod failures should not trigger the role's restart policy for the entire instance.
 

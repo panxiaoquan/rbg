@@ -607,13 +607,21 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 			wantRestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 		},
 		{
-			name: "role opting into recreate on pod failure",
+			name: "role arming the triggers before Ready",
 			role: func() workloadsv1alpha2.RoleSpec {
-				return wrappersv2.BuildLeaderWorkerRole("pod-failure-role").
-					WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
-					Obj()
+				role := wrappersv2.BuildLeaderWorkerRole("activate-after-role").Obj()
+				role.LeaderWorkerPattern.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{
+					Type:          workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					ActivateAfter: workloadsv1alpha2.RestartPolicyActivateAfterCreated,
+				}
+				return role
 			},
-			wantRestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation,
+			wantConfig: &workloadsv1alpha2.RestartPolicyConfig{
+				Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				ActivateAfter:    workloadsv1alpha2.RestartPolicyActivateAfterCreated,
+				BaseDelaySeconds: ptr.To(workloadsv1alpha2.DefaultBaseDelaySeconds),
+				MaxDelaySeconds:  ptr.To(workloadsv1alpha2.DefaultMaxDelaySeconds),
+			},
 		},
 		{
 			name: "role configuring a type but no delays",
@@ -689,6 +697,11 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 				assert.Equal(t, ptr.To(tt.wantConfig.Type), template.RestartPolicyConfig.Type)
 				assert.Equal(t, tt.wantConfig.BaseDelaySeconds, template.RestartPolicyConfig.BaseDelaySeconds)
 				assert.Equal(t, tt.wantConfig.MaxDelaySeconds, template.RestartPolicyConfig.MaxDelaySeconds)
+				if tt.wantConfig.ActivateAfter == "" {
+					assert.Nil(t, template.RestartPolicyConfig.ActivateAfter)
+				} else {
+					assert.Equal(t, ptr.To(tt.wantConfig.ActivateAfter), template.RestartPolicyConfig.ActivateAfter)
+				}
 			}
 
 			// The typed assertions above can both hold while the field the apiserver
@@ -702,6 +715,18 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 			_, hasConfig := keys["restartPolicyConfig"]
 			assert.Equal(t, tt.wantConfig == nil, hasString)
 			assert.Equal(t, tt.wantConfig != nil, hasConfig)
+
+			// activateAfter must never appear unless the role set it explicitly: a
+			// non-empty default written into the template would move the RoleInstanceSet
+			// revision hash and roll every existing role on upgrade.
+			rawConfig, hasConfigKey := keys["restartPolicyConfig"]
+			if tt.wantConfig == nil || tt.wantConfig.ActivateAfter == "" {
+				if hasConfigKey {
+					assert.NotContains(t, string(rawConfig), "activateAfter")
+				}
+			} else {
+				assert.Contains(t, string(rawConfig), "activateAfter")
+			}
 		})
 	}
 }

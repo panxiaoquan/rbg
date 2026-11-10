@@ -277,8 +277,8 @@ func TestShouldRecreateInstance(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "Pod being deleted - should NOT recreate",
-			desc: "Pod being deleted (with DeletionTimestamp) is not counted as Failed",
+			name: "Pod being deleted - should recreate",
+			desc: "A Terminating desired member is member loss under the default policy (#542)",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -308,7 +308,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Status: corev1.PodStatus{Phase: corev1.PodFailed},
 				},
 			},
-			expected: false,
+			expected: true,
 		},
 		{
 			name: "All pods Running - should NOT recreate",
