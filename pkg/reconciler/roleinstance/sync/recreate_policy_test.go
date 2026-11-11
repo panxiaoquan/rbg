@@ -132,35 +132,6 @@ func TestShouldRecreateInstanceTriggers(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "absent desired rank is member loss once Ready at this generation",
-			mutate: func(i *workloadsv1alpha2.RoleInstance, pods []*corev1.Pod) []*corev1.Pod {
-				markReady(i)
-				i.Spec.Components[0].Size = ptr.To[int32](2)
-				return pods // rank 1 never present
-			},
-			want: true,
-		},
-		{
-			name: "absent desired rank is not member loss before the instance was Ready",
-			mutate: func(i *workloadsv1alpha2.RoleInstance, pods []*corev1.Pod) []*corev1.Pod {
-				i.Spec.RestartPolicyConfig.ActivateAfter = workloadsv1alpha2.RestartPolicyActivateAfterCreated
-				i.Spec.Components[0].Size = ptr.To[int32](2)
-				pods[0].Status.Phase = corev1.PodRunning
-				return pods
-			},
-		},
-		{
-			name: "absent desired rank is not member loss under readyPolicy=None",
-			mutate: func(i *workloadsv1alpha2.RoleInstance, pods []*corev1.Pod) []*corev1.Pod {
-				markReady(i)
-				i.Status.LastReadyGeneration = i.Generation
-				i.Spec.ReadyPolicy = workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone
-				i.Spec.Components[0].Size = ptr.To[int32](2)
-				pods[0].Status.Phase = corev1.PodRunning // only the absent-rank half could fire
-				return pods
-			},
-		},
-		{
 			name: "init restart alone is not a trigger",
 			mutate: func(i *workloadsv1alpha2.RoleInstance, pods []*corev1.Pod) []*corev1.Pod {
 				i.Spec.RestartPolicyConfig.ActivateAfter = workloadsv1alpha2.RestartPolicyActivateAfterCreated
@@ -209,7 +180,7 @@ func TestShouldRecreateInstanceTriggers(t *testing.T) {
 			mutate: func(i *workloadsv1alpha2.RoleInstance, pods []*corev1.Pod) []*corev1.Pod {
 				markReady(i)
 				i.Spec.Components[0].Size = ptr.To[int32](0)
-				pods[0].Status.Phase = corev1.PodRunning // only the absent-rank half could fire
+				pods[0].Status.Phase = corev1.PodRunning
 				return pods
 			},
 		},

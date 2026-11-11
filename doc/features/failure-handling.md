@@ -10,21 +10,21 @@ RBG supports `None` and `RecreateRoleInstanceOnPodRestart`. For the recreate pol
 | Policy | Description |
 |--------|-------------|
 | `None` | No automatic restart action; rely on default pod restart behavior. Failed pods are replaced through normal reconciliation. |
-| `RecreateRoleInstanceOnPodRestart` | Recreate the whole role instance when a member fails, restarts unexpectedly, or is lost (Terminating or absent). `activateAfter` decides whether that starts before or after the instance is first Ready. |
+| `RecreateRoleInstanceOnPodRestart` | Recreate the whole role instance when a member fails, restarts unexpectedly, or is lost while terminating. `activateAfter` decides whether that starts before or after the instance is first Ready. |
 
 ### Triggers
 
 `RecreateRoleInstanceOnPodRestart` recreates the instance on any of:
 
-- a desired member Pod that is **Terminating**, or **absent** once the instance was Ready at its current generation,
+- a desired member Pod that is **Terminating**,
 - a Pod in **Failed** phase,
 - a **container restart** that an in-place update does not explain.
 
 A Terminating member is the earliest signal after an eviction: with an unreachable node the
 Pod stays Terminating until the Node object is deleted, an out-of-service taint is applied,
-or it is force-deleted, and no same-name replacement exists before that. The absent-member
-half is narrower on purpose: it requires `readyPolicy: AllPodReady` and that the instance was
-already Ready at this generation, so creation and `readyPolicy: None` are unaffected.
+or it is force-deleted, and no same-name replacement exists before that. A member that
+disappears without ever being observed as Terminating (force delete, PodGC, controller
+downtime) is not covered by this trigger.
 
 The existing protections stay in force: a rollout in progress (`currentRevision` not yet
 equal to `updateRevision`) never triggers, any spec change bumps the generation and disarms

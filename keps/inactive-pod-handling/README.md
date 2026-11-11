@@ -63,10 +63,10 @@ settings describe it:
 - `restartPolicyConfig.activateAfter` says *when* those triggers are armed.
 
 The triggers are unexpected container restarts, Failed Pods, and loss of a desired member
-Pod (a member that is Terminating, or absent once the instance was Ready at its current
-generation). Member loss is part of the default policy: it is not a separate opt-in,
-because a lost member that is silently replaced on its own is the failure mode #542
-reports, and LeaderWorkerSet already behaves this way under the same policy name.
+Pod observed while Terminating. Member loss is part of the default policy: it is not a
+separate opt-in, because a lost member that is silently replaced on its own is the failure
+mode #542 reports, and LeaderWorkerSet already behaves this way under the same policy name.
+A member that disappears without ever being observed as Terminating is tracked separately.
 
 `activateAfter` default is `Ready`:
 
@@ -404,7 +404,7 @@ func (c *realControl) Scale(...) (bool, error) {
 | Pod Failed + `None` | RoleInstance Controller | Delete Failed pod, create replacement |
 | Pod Failed + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate entire Instance, preserving existing guards |
 | Pod Failed + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate entire Instance; armed from creation when `activateAfter: Created` |
-| Desired member Terminating or absent + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate affected Instance (absent only once Ready at the current generation) |
+| Desired member Terminating + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate affected Instance |
 | Container restart + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate affected Instance; before first Ready only with `activateAfter: Created` |
 | Container restart + `None` | None (K8s default) | Let container restart |
 | Container restart + `RecreateRoleInstanceOnPodRestart` | Existing workload behavior | Preserve current behavior |

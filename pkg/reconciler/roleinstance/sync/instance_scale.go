@@ -603,9 +603,6 @@ func recreateTriggerReason(instance *workloadsv1alpha2.RoleInstance, pods []*v1.
 			return "ContainerRestarted", p.Name
 		}
 	}
-	if desiredMemberLost(instance, pods, pods) {
-		return "MemberMissing", ""
-	}
 	return "Unknown", ""
 }
 
@@ -631,18 +628,7 @@ func recreateTriggerReason(instance *workloadsv1alpha2.RoleInstance, pods []*v1.
 //
 // Per KEP Non-Goals: Succeeded pods are NOT handled here - they represent normal completion
 // and should not trigger Instance recreation.
-func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
-	return shouldRecreateInstanceWith(instance, pods, pods, baselines)
-}
-
-// shouldRecreateInstanceWith is shouldRecreateInstance with the desired membership passed
-// separately, so a desired member that disappeared without ever being observed as
-// Terminating is still visible as member loss: its slot is simply empty in the observed
-// Pod list.
-//
-// pods is every Pod of the instance, including inactive ones. expectedPods is what the
-// component sizes say should exist; a name missing from pods means that rank is gone.
-func shouldRecreateInstanceWith(instance *workloadsv1alpha2.RoleInstance, pods, expectedPods []*v1.Pod,
+func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod,
 	baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
 	if instance.Spec.GetRestartPolicy() != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		return false
@@ -663,7 +649,7 @@ func shouldRecreateInstanceWith(instance *workloadsv1alpha2.RoleInstance, pods, 
 		return false
 	}
 
-	if desiredMemberLost(instance, pods, expectedPods) {
+	if desiredMemberLost(pods) {
 		return true
 	}
 
@@ -714,67 +700,24 @@ func restartTriggersArmed(instance *workloadsv1alpha2.RoleInstance) bool {
 		hasRecentRestart(instance)
 }
 
-// desiredMemberLost reports whether a desired member Pod is Terminating or gone.
+// desiredMemberLost reports whether a desired member Pod is Terminating.
 //
-// A Terminating Pod is the earliest signal after an eviction: with an unreachable node
-// the Pod stays Terminating until the Node object is deleted, an out-of-service taint is
-// applied, or someone force-deletes it, and no same-name replacement exists before that.
-// A member that disappears unobserved (force delete, PodGC, controller downtime) shows up
-// only as an absent desired rank instead, which is a level signal and therefore survives
-// controller restarts.
+// A Terminating Pod is the earliest signal after an eviction: with an unreachable node the
+// Pod stays Terminating until the Node object is deleted, an out-of-service taint is
+// applied, or it is force-deleted, and no same-name replacement exists before that.
 //
-// The absent-rank half is deliberately narrower than the Terminating half. It requires
-// readyPolicy=AllPodReady and that the instance was Ready at its current generation, so
-// creation and readyPolicy=None are unaffected and a not-yet-created rank can never be
-// mistaken for a lost one. Terminating ranks are unambiguous and need neither condition.
+// Scale-in stays excluded: a rank at or beyond its component size is on its way out by
+// design, and the controller's own rebuild deletes clear the revision guard above, so the
+// trigger does not re-arm until the instance is stable again.
 //
-// Scale-in and the controller's own rebuild deletes stay excluded: ranks at or beyond the
-// component size are expected to be absent, and a rebuild clears the revision guard above,
-// which keeps the trigger from re-arming until the instance is stable again.
-func desiredMemberLost(instance *workloadsv1alpha2.RoleInstance, pods, expectedPods []*v1.Pod) bool {
-	// Terminating desired member: unambiguous at any point the triggers are armed.
-	observed := make(map[string]*v1.Pod, len(pods))
-	for _, p := range pods {
-		observed[p.Name] = p
-	}
-	for _, expected := range expectedPods {
-		if hasTriggerPolicyIgnore(expected) {
+// A member that disappears without ever being observed as Terminating (force delete,
+// PodGC, controller downtime) is not covered here; that case is tracked separately.
+func desiredMemberLost(pods []*v1.Pod) bool {
+	for _, pod := range pods {
+		if pod.DeletionTimestamp == nil || hasTriggerPolicyIgnore(pod) {
 			continue
 		}
-		if p, ok := observed[expected.Name]; ok && p.DeletionTimestamp != nil {
-			return true
-		}
-	}
-
-	// Absent desired rank: only meaningful once the instance was Ready here, because a
-	// rank that has not been created yet is indistinguishable from one that was deleted.
-	if instance.Spec.ReadyPolicy != workloadsv1alpha2.RoleInstanceReadyOnAllPodReady {
-		return false
-	}
-	if !wasInstanceReady(instance) && instance.Status.LastReadyGeneration != instance.Generation {
-		return false
-	}
-
-	present := make(map[string]map[int32]struct{}, len(instance.Spec.Components))
-	for _, p := range pods {
-		if hasTriggerPolicyIgnore(p) {
-			continue
-		}
-		name, id := instanceutil.GetPodComponentName(p), instanceutil.GetPodComponentID(p)
-		if present[name] == nil {
-			present[name] = make(map[int32]struct{})
-		}
-		present[name][id] = struct{}{}
-	}
-	for _, component := range instance.Spec.Components {
-		if component.Size == nil {
-			continue
-		}
-		for id := int32(0); id < *component.Size; id++ {
-			if _, ok := present[component.Name][id]; !ok {
-				return true
-			}
-		}
+		return true
 	}
 	return false
 }
